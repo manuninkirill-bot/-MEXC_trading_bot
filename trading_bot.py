@@ -333,23 +333,8 @@ class TradingBot:
                 logging.info(f"[{self.now()}] SAR: 1m={d1}, 5m={d5}, 30m={d30}")
 
                 if state["in_position"]:
-                    pos = state["position"]
-                    try:
-                        entry_dt = datetime.fromisoformat(pos["entry_time"])
-                        hold_min = (self.now() - entry_dt).total_seconds() / 60
-                    except Exception:
-                        hold_min = 0
-
-                    if hold_min >= 15:
-                        # Принудительное закрытие — позиция держится более 15 минут
-                        logging.info(f"Force-close after {hold_min:.1f}m (max 15m rule)")
-                        self.close_position(close_reason="max_hold_15m")
-                        state["skip_next_signal"] = False
-                        self.save_state_to_file()
-                    elif hold_min >= 1 and d1 != pos["side"]:
-                        # Смена 1m SAR против позиции — выходим (минимум 1 мин прошло)
-                        logging.info(f"Exit on 1m SAR flip after {hold_min:.1f}m: {pos['side']} → {d1}")
-                        self.close_position(close_reason="sar_1m_flip")
+                    if d1 != state["position"]["side"]:
+                        self.close_position(close_reason="sar_reversal")
                         state["skip_next_signal"] = True
                         self.save_state_to_file()
                 else:
