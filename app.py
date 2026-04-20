@@ -82,7 +82,7 @@ def sar_monitor_loop():
         except Exception as e:
             logging.error(f"SAR monitor loop error: {e}")
 
-        _time.sleep(15)  # обновляем каждые 15 секунд
+        _time.sleep(30)  # обновляем каждые 30 секунд
 
 
 def bot_main_loop():
