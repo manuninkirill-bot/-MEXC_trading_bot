@@ -34,6 +34,10 @@ bot_thread = None
 bot_running = False
 telegram_notifier = None
 
+# SAR-монитор — работает всегда, независимо от бота
+sar_monitor_instance = None
+sar_monitor_thread = None
+
 def init_telegram():
     """Инициализация Telegram уведомлений"""
     global telegram_notifier
@@ -46,6 +50,40 @@ def init_telegram():
         logging.info("Telegram notifier initialized")
     else:
         logging.warning("Telegram credentials not configured")
+
+def sar_monitor_loop():
+    """Постоянный фоновый поток — получает SAR-сигналы с биржи в реальном времени.
+    Работает всегда, независимо от того, запущен торговый бот или нет."""
+    global sar_monitor_instance
+    import time as _time
+
+    logging.info("SAR monitor started")
+    # Создаём отдельный экземпляр бота только для чтения рыночных данных
+    try:
+        sar_monitor_instance = TradingBot(telegram_notifier=None)
+    except Exception as e:
+        logging.error(f"SAR monitor init error: {e}")
+        return
+
+    while True:
+        try:
+            # Загружаем направления с биржи напрямую
+            dirs = sar_monitor_instance.get_current_directions()
+            state["sar_directions"] = dirs
+
+            # Обновляем текущую цену если торговый бот не занят
+            try:
+                price = sar_monitor_instance.get_current_price()
+                state["live_price"] = price
+            except Exception:
+                pass
+
+            logging.debug(f"SAR live: {dirs}")
+        except Exception as e:
+            logging.error(f"SAR monitor loop error: {e}")
+
+        _time.sleep(15)  # обновляем каждые 15 секунд
+
 
 def bot_main_loop():
     """Основной цикл торгового бота"""
@@ -106,11 +144,15 @@ def fetch_mexc_payouts():
 def api_status():
     """Получение текущего статуса бота"""
     try:
-        # Читаем SAR-направления из кэша (обновляется strategy_loop)
+        # SAR-направления обновляются SAR-монитором в реальном времени (каждые 15 сек)
         directions = state.get('sar_directions', {tf: None for tf in ['1m', '5m', '30m']})
         
-        # Получаем текущую цену
-        current_price = bot_instance.get_current_price() if bot_instance else 3000.0
+        # Цена: приоритет — live_price от SAR-монитора, затем торговый бот
+        current_price = (
+            state.get('live_price')
+            or (bot_instance.get_current_price() if bot_instance else None)
+            or (sar_monitor_instance.get_current_price() if sar_monitor_instance else 3000.0)
+        )
         
         return jsonify({
             'bot_running': bot_running,
@@ -491,6 +533,11 @@ def telegram_webhook():
 
 # Инициализация Telegram при загрузке модуля
 init_telegram()
+
+# Запуск SAR-монитора — работает всегда, данные идут с биржи в реальном времени
+sar_monitor_thread = threading.Thread(target=sar_monitor_loop, daemon=True, name="sar-monitor")
+sar_monitor_thread.start()
+logging.info("SAR live monitor thread started")
 
 # Настройка Telegram WebApp
 try:
