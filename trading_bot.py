@@ -155,19 +155,19 @@ class TradingBot:
                 ohlcv = self.simulator.fetch_ohlcv(tf, limit=limit)
             else:
                 ohlcv = None
-                # 1) MEXC REST API
+                # 1) Binance REST — стабильный глобальный источник
                 try:
-                    ohlcv = fetch_ohlcv_mexc("ETHUSDT", interval=tf, limit=limit)
-                    logging.debug(f"MEXC REST OHLCV {tf}: {len(ohlcv)} candles")
+                    ohlcv = fetch_ohlcv_binance("ETHUSDT", interval=tf, limit=limit)
+                    logging.debug(f"Binance OHLCV {tf}: {len(ohlcv)} candles")
                 except Exception as e1:
-                    logging.warning(f"MEXC REST OHLCV {tf} failed: {e1}")
-                    # 2) Binance REST API (резерв)
+                    logging.warning(f"Binance OHLCV {tf} failed: {e1}")
+                    # 2) MEXC REST (резерв)
                     try:
-                        ohlcv = fetch_ohlcv_binance("ETHUSDT", interval=tf, limit=limit)
-                        logging.info(f"Binance REST OHLCV {tf}: {len(ohlcv)} candles")
+                        ohlcv = fetch_ohlcv_mexc("ETHUSDT", interval=tf, limit=limit)
+                        logging.info(f"MEXC OHLCV {tf}: {len(ohlcv)} candles")
                     except Exception as e2:
-                        logging.warning(f"Binance REST OHLCV {tf} failed: {e2}")
-                        # 3) ccxt.mexc (последний резерв)
+                        logging.warning(f"MEXC OHLCV {tf} failed: {e2}")
+                        # 3) ccxt (последний резерв)
                         try:
                             exc = self.public_exchange if self.public_exchange else self.exchange
                             ohlcv = exc.fetch_ohlcv(SYMBOL_SPOT, timeframe=tf, limit=limit)
@@ -370,16 +370,16 @@ class TradingBot:
         try:
             if USE_SIMULATOR:
                 return self.simulator.get_current_price()
-            # 1) MEXC REST
+            # 1) Binance REST — стабильный
             try:
-                return fetch_price_mexc("ETHUSDT")
+                return fetch_price_binance("ETHUSDT")
             except Exception as e1:
-                logging.warning(f"MEXC REST price failed: {e1}")
-                # 2) Binance REST
+                logging.warning(f"Binance price failed: {e1}")
+                # 2) MEXC REST
                 try:
-                    return fetch_price_binance("ETHUSDT")
+                    return fetch_price_mexc("ETHUSDT")
                 except Exception as e2:
-                    logging.warning(f"Binance REST price failed: {e2}")
+                    logging.warning(f"MEXC price failed: {e2}")
                     # 3) ccxt
                     exc = self.public_exchange if self.public_exchange else self.exchange
                     try:
