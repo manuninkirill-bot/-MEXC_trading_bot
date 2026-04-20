@@ -25,20 +25,9 @@ def fetch_ohlcv_mexc(symbol="ETHUSDT", interval="1m", limit=200):
     raw = _rest_get(url)
     return [[int(d[0]), float(d[1]), float(d[2]), float(d[3]), float(d[4]), float(d[5])] for d in raw]
 
-def fetch_ohlcv_binance(symbol="ETHUSDT", interval="1m", limit=200):
-    """OHLCV с Binance REST API (резерв, если MEXC недоступен)."""
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    raw = _rest_get(url)
-    return [[int(d[0]), float(d[1]), float(d[2]), float(d[3]), float(d[4]), float(d[5])] for d in raw]
-
 def fetch_price_mexc(symbol="ETHUSDT"):
     """Текущая цена ETH с MEXC REST API."""
     data = _rest_get(f"https://api.mexc.com/api/v3/ticker/price?symbol={symbol}")
-    return float(data["price"])
-
-def fetch_price_binance(symbol="ETHUSDT"):
-    """Текущая цена ETH с Binance REST API."""
-    data = _rest_get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}")
     return float(data["price"])
 
 # ========== Конфигурация ==========
@@ -155,24 +144,19 @@ class TradingBot:
                 ohlcv = self.simulator.fetch_ohlcv(tf, limit=limit)
             else:
                 ohlcv = None
-                # 1) Binance REST — стабильный глобальный источник
+                # 1) MEXC REST API напрямую
                 try:
-                    ohlcv = fetch_ohlcv_binance("ETHUSDT", interval=tf, limit=limit)
-                    logging.debug(f"Binance OHLCV {tf}: {len(ohlcv)} candles")
+                    ohlcv = fetch_ohlcv_mexc("ETHUSDT", interval=tf, limit=limit)
+                    logging.debug(f"MEXC OHLCV {tf}: {len(ohlcv)} candles")
                 except Exception as e1:
-                    logging.warning(f"Binance OHLCV {tf} failed: {e1}")
-                    # 2) MEXC REST (резерв)
+                    logging.warning(f"MEXC REST OHLCV {tf} failed: {e1}")
+                    # 2) ccxt.mexc (резерв)
                     try:
-                        ohlcv = fetch_ohlcv_mexc("ETHUSDT", interval=tf, limit=limit)
-                        logging.info(f"MEXC OHLCV {tf}: {len(ohlcv)} candles")
+                        exc = self.public_exchange if self.public_exchange else self.exchange
+                        ohlcv = exc.fetch_ohlcv(SYMBOL_SPOT, timeframe=tf, limit=limit)
+                        logging.info(f"ccxt MEXC OHLCV {tf}: {len(ohlcv)} candles")
                     except Exception as e2:
-                        logging.warning(f"MEXC OHLCV {tf} failed: {e2}")
-                        # 3) ccxt (последний резерв)
-                        try:
-                            exc = self.public_exchange if self.public_exchange else self.exchange
-                            ohlcv = exc.fetch_ohlcv(SYMBOL_SPOT, timeframe=tf, limit=limit)
-                        except Exception as e3:
-                            logging.error(f"All OHLCV sources failed for {tf}: {e3}")
+                        logging.error(f"MEXC OHLCV {tf} failed (REST + ccxt): {e2}")
 
             if not ohlcv or len(ohlcv) < 5:
                 return None
@@ -370,23 +354,18 @@ class TradingBot:
         try:
             if USE_SIMULATOR:
                 return self.simulator.get_current_price()
-            # 1) Binance REST — стабильный
+            # 1) MEXC REST API
             try:
-                return fetch_price_binance("ETHUSDT")
+                return fetch_price_mexc("ETHUSDT")
             except Exception as e1:
-                logging.warning(f"Binance price failed: {e1}")
-                # 2) MEXC REST
+                logging.warning(f"MEXC REST price failed: {e1}")
+                # 2) ccxt.mexc (резерв)
+                exc = self.public_exchange if self.public_exchange else self.exchange
                 try:
-                    return fetch_price_mexc("ETHUSDT")
-                except Exception as e2:
-                    logging.warning(f"MEXC price failed: {e2}")
-                    # 3) ccxt
-                    exc = self.public_exchange if self.public_exchange else self.exchange
-                    try:
-                        ticker = exc.fetch_ticker(SYMBOL_SPOT)
-                    except Exception:
-                        ticker = exc.fetch_ticker("ETH/USDT:USDT")
-                    return float(ticker["last"])
+                    ticker = exc.fetch_ticker(SYMBOL_SPOT)
+                except Exception:
+                    ticker = exc.fetch_ticker("ETH/USDT:USDT")
+                return float(ticker["last"])
         except Exception:
             return 3000.0
 
