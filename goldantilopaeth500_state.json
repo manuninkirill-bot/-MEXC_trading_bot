@@ -3,14 +3,8 @@
   "available": 100.0,
   "in_position": false,
   "position": null,
-  "last_trade_time": "2026-03-02T05:15:32.133067",
-  "last_1m_dir": "short",
-  "one_min_flip_count": 0,
-  "skip_next_signal": false,
   "trades": [],
-  "sar_directions": {
-    "1m": "short",
-    "5m": "short",
-    "30m": "long"
-  }
+  "leverage": 500,
+  "sar_directions": {},
+  "live_price": null
 }
