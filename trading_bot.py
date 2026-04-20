@@ -3,6 +3,7 @@ import time
 import json
 import threading
 import random
+import urllib.request
 from datetime import datetime, timedelta
 
 import ccxt
@@ -11,6 +12,28 @@ from ta.trend import PSARIndicator
 import logging
 from market_simulator import MarketSimulator
 from signal_sender import SignalSender
+
+# ========== Прямой MEXC REST API (без ccxt, работает на любом хосте) ==========
+MEXC_REST_BASE = "https://api.mexc.com/api/v3"
+
+def _mexc_rest(path, params=None, timeout=10):
+    """Прямой GET-запрос к MEXC REST API через urllib."""
+    url = MEXC_REST_BASE + path
+    if params:
+        url += "?" + "&".join(f"{k}={v}" for k, v in params.items())
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+def fetch_ohlcv_mexc(symbol_base="ETHUSDT", interval="1m", limit=200):
+    """Получить OHLCV с MEXC REST API. Возвращает список [ts, o, h, l, c, v]."""
+    raw = _mexc_rest("/klines", {"symbol": symbol_base, "interval": interval, "limit": limit})
+    return [[int(d[0]), float(d[1]), float(d[2]), float(d[3]), float(d[4]), float(d[5])] for d in raw]
+
+def fetch_price_mexc(symbol_base="ETHUSDT"):
+    """Получить текущую цену ETH с MEXC REST API."""
+    data = _mexc_rest("/ticker/price", {"symbol": symbol_base})
+    return float(data["price"])
 
 # ========== Конфигурация ==========
 # Ключи MEXC (приоритет) или AscendEx (обратная совместимость)
@@ -125,12 +148,19 @@ class TradingBot:
             if USE_SIMULATOR and self.simulator:
                 ohlcv = self.simulator.fetch_ohlcv(tf, limit=limit)
             else:
-                # Используем публичный MEXC spot для OHLCV (не требует API-ключей)
-                exc = self.public_exchange if self.public_exchange else self.exchange
+                ohlcv = None
+                # 1) Прямой MEXC REST API (работает без ccxt, без ключей)
                 try:
-                    ohlcv = exc.fetch_ohlcv(SYMBOL_SPOT, timeframe=tf, limit=limit)
-                except Exception:
-                    ohlcv = exc.fetch_ohlcv("ETH/USDT:USDT", timeframe=tf, limit=limit)
+                    ohlcv = fetch_ohlcv_mexc("ETHUSDT", interval=tf, limit=limit)
+                    logging.debug(f"MEXC REST OHLCV {tf}: {len(ohlcv)} candles")
+                except Exception as e1:
+                    logging.warning(f"MEXC REST OHLCV {tf} failed: {e1}")
+                    # 2) Fallback: ccxt.mexc
+                    try:
+                        exc = self.public_exchange if self.public_exchange else self.exchange
+                        ohlcv = exc.fetch_ohlcv(SYMBOL_SPOT, timeframe=tf, limit=limit)
+                    except Exception as e2:
+                        logging.error(f"ccxt OHLCV {tf} also failed: {e2}")
 
             if not ohlcv or len(ohlcv) < 5:
                 return None
@@ -140,7 +170,7 @@ class TradingBot:
             df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
             return df
         except Exception as e:
-            logging.error(f"MEXC OHLCV {tf} error: {e}")
+            logging.error(f"fetch_ohlcv_tf {tf} error: {e}")
             return None
 
     def compute_psar(self, df: pd.DataFrame):
@@ -328,13 +358,18 @@ class TradingBot:
         try:
             if USE_SIMULATOR:
                 return self.simulator.get_current_price()
-            # Публичный тикер MEXC spot — не требует API-ключей
-            exc = self.public_exchange if self.public_exchange else self.exchange
+            # 1) Прямой MEXC REST API
             try:
-                ticker = exc.fetch_ticker(SYMBOL_SPOT)
-            except Exception:
-                ticker = exc.fetch_ticker("ETH/USDT:USDT")
-            return float(ticker["last"])
+                return fetch_price_mexc("ETHUSDT")
+            except Exception as e1:
+                logging.warning(f"MEXC REST price failed: {e1}")
+                # 2) Fallback: ccxt
+                exc = self.public_exchange if self.public_exchange else self.exchange
+                try:
+                    ticker = exc.fetch_ticker(SYMBOL_SPOT)
+                except Exception:
+                    ticker = exc.fetch_ticker("ETH/USDT:USDT")
+                return float(ticker["last"])
         except Exception:
             return 3000.0
 
