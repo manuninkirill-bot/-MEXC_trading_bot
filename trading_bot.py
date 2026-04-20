@@ -13,26 +13,32 @@ import logging
 from market_simulator import MarketSimulator
 from signal_sender import SignalSender
 
-# ========== Прямой MEXC REST API (без ccxt, работает на любом хосте) ==========
-MEXC_REST_BASE = "https://api.mexc.com/api/v3"
-
-def _mexc_rest(path, params=None, timeout=10):
-    """Прямой GET-запрос к MEXC REST API через urllib."""
-    url = MEXC_REST_BASE + path
-    if params:
-        url += "?" + "&".join(f"{k}={v}" for k, v in params.items())
+# ========== Прямой REST API (MEXC + Binance fallback) ==========
+def _rest_get(url, timeout=10):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
-def fetch_ohlcv_mexc(symbol_base="ETHUSDT", interval="1m", limit=200):
-    """Получить OHLCV с MEXC REST API. Возвращает список [ts, o, h, l, c, v]."""
-    raw = _mexc_rest("/klines", {"symbol": symbol_base, "interval": interval, "limit": limit})
+def fetch_ohlcv_mexc(symbol="ETHUSDT", interval="1m", limit=200):
+    """OHLCV с MEXC REST API."""
+    url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    raw = _rest_get(url)
     return [[int(d[0]), float(d[1]), float(d[2]), float(d[3]), float(d[4]), float(d[5])] for d in raw]
 
-def fetch_price_mexc(symbol_base="ETHUSDT"):
-    """Получить текущую цену ETH с MEXC REST API."""
-    data = _mexc_rest("/ticker/price", {"symbol": symbol_base})
+def fetch_ohlcv_binance(symbol="ETHUSDT", interval="1m", limit=200):
+    """OHLCV с Binance REST API (резерв, если MEXC недоступен)."""
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    raw = _rest_get(url)
+    return [[int(d[0]), float(d[1]), float(d[2]), float(d[3]), float(d[4]), float(d[5])] for d in raw]
+
+def fetch_price_mexc(symbol="ETHUSDT"):
+    """Текущая цена ETH с MEXC REST API."""
+    data = _rest_get(f"https://api.mexc.com/api/v3/ticker/price?symbol={symbol}")
+    return float(data["price"])
+
+def fetch_price_binance(symbol="ETHUSDT"):
+    """Текущая цена ETH с Binance REST API."""
+    data = _rest_get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}")
     return float(data["price"])
 
 # ========== Конфигурация ==========
@@ -149,18 +155,24 @@ class TradingBot:
                 ohlcv = self.simulator.fetch_ohlcv(tf, limit=limit)
             else:
                 ohlcv = None
-                # 1) Прямой MEXC REST API (работает без ccxt, без ключей)
+                # 1) MEXC REST API
                 try:
                     ohlcv = fetch_ohlcv_mexc("ETHUSDT", interval=tf, limit=limit)
                     logging.debug(f"MEXC REST OHLCV {tf}: {len(ohlcv)} candles")
                 except Exception as e1:
                     logging.warning(f"MEXC REST OHLCV {tf} failed: {e1}")
-                    # 2) Fallback: ccxt.mexc
+                    # 2) Binance REST API (резерв)
                     try:
-                        exc = self.public_exchange if self.public_exchange else self.exchange
-                        ohlcv = exc.fetch_ohlcv(SYMBOL_SPOT, timeframe=tf, limit=limit)
+                        ohlcv = fetch_ohlcv_binance("ETHUSDT", interval=tf, limit=limit)
+                        logging.info(f"Binance REST OHLCV {tf}: {len(ohlcv)} candles")
                     except Exception as e2:
-                        logging.error(f"ccxt OHLCV {tf} also failed: {e2}")
+                        logging.warning(f"Binance REST OHLCV {tf} failed: {e2}")
+                        # 3) ccxt.mexc (последний резерв)
+                        try:
+                            exc = self.public_exchange if self.public_exchange else self.exchange
+                            ohlcv = exc.fetch_ohlcv(SYMBOL_SPOT, timeframe=tf, limit=limit)
+                        except Exception as e3:
+                            logging.error(f"All OHLCV sources failed for {tf}: {e3}")
 
             if not ohlcv or len(ohlcv) < 5:
                 return None
@@ -358,18 +370,23 @@ class TradingBot:
         try:
             if USE_SIMULATOR:
                 return self.simulator.get_current_price()
-            # 1) Прямой MEXC REST API
+            # 1) MEXC REST
             try:
                 return fetch_price_mexc("ETHUSDT")
             except Exception as e1:
                 logging.warning(f"MEXC REST price failed: {e1}")
-                # 2) Fallback: ccxt
-                exc = self.public_exchange if self.public_exchange else self.exchange
+                # 2) Binance REST
                 try:
-                    ticker = exc.fetch_ticker(SYMBOL_SPOT)
-                except Exception:
-                    ticker = exc.fetch_ticker("ETH/USDT:USDT")
-                return float(ticker["last"])
+                    return fetch_price_binance("ETHUSDT")
+                except Exception as e2:
+                    logging.warning(f"Binance REST price failed: {e2}")
+                    # 3) ccxt
+                    exc = self.public_exchange if self.public_exchange else self.exchange
+                    try:
+                        ticker = exc.fetch_ticker(SYMBOL_SPOT)
+                    except Exception:
+                        ticker = exc.fetch_ticker("ETH/USDT:USDT")
+                    return float(ticker["last"])
         except Exception:
             return 3000.0
 
