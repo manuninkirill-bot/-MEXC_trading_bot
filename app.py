@@ -444,7 +444,8 @@ def api_set_leverage():
         state['leverage'] = leverage
         if bot_instance and bot_instance.exchange and API_KEY:
             try:
-                bot_instance.exchange.set_leverage(leverage, 'ETH/USDT')
+                from trading_bot import SYMBOL
+                bot_instance.exchange.set_leverage(leverage, SYMBOL)
             except Exception as e:
                 logging.warning(f"Exchange set_leverage failed: {e}")
         logging.info(f"Leverage changed to x{leverage}")
