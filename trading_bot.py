@@ -13,12 +13,14 @@ from market_simulator import MarketSimulator
 from signal_sender import SignalSender
 
 # ========== Конфигурация ==========
-API_KEY = os.getenv("ASCENDEX_API_KEY", "")
-API_SECRET = os.getenv("ASCENDEX_SECRET", "")
+# Ключи MEXC (приоритет) или AscendEx (обратная совместимость)
+API_KEY    = os.getenv("MEXC_API_KEY",    os.getenv("ASCENDEX_API_KEY", ""))
+API_SECRET = os.getenv("MEXC_SECRET",     os.getenv("ASCENDEX_SECRET",  ""))
 RUN_IN_PAPER = True
 USE_SIMULATOR = os.getenv("USE_SIMULATOR", "0") == "1"
 
-SYMBOL = "ETH/USDT"  # ASCENDEX/MEXC futures symbol format
+SYMBOL        = "ETH/USDT:USDT"  # MEXC linear perpetual futures
+SYMBOL_SPOT   = "ETH/USDT"       # для публичного OHLCV (не требует ключей)
 LEVERAGE = 500  # плечо x500 (может быть изменено через API)
 ISOLATED = True  # изолированная маржа
 POSITION_PERCENT = 0.10  # 10% от доступного баланса
@@ -54,25 +56,33 @@ class TradingBot:
             logging.info("Initializing market simulator")
             self.simulator = MarketSimulator(initial_price=3000, volatility=0.02)
             self.exchange = None
+            self.public_exchange = None
         else:
-            logging.info("Initializing ASCENDEX exchange connection")
+            logging.info("Initializing MEXC exchange connection")
             self.simulator = None
-            self.exchange = ccxt.ascendex({
+
+            # Публичный клиент MEXC — для OHLCV/цены (без ключей)
+            self.public_exchange = ccxt.mexc({
+                "enableRateLimit": True,
+                "options": {"defaultType": "spot"},
+            })
+
+            # Торговый клиент MEXC — для ордеров (нужны ключи)
+            self.exchange = ccxt.mexc({
                 "apiKey": API_KEY,
                 "secret": API_SECRET,
                 "enableRateLimit": True,
-                "options": {
-                    "defaultType": "swap",
-                }
+                "options": {"defaultType": "swap"},
             })
-            
+
             if API_KEY and API_SECRET:
                 try:
+                    lev = state.get("leverage", LEVERAGE)
                     if ISOLATED:
                         self.exchange.set_margin_mode('isolated', SYMBOL)
-                    self.exchange.set_leverage(LEVERAGE, SYMBOL)
+                    self.exchange.set_leverage(lev, SYMBOL)
                 except Exception as e:
-                    logging.error(f"Failed to configure exchange: {e}")
+                    logging.error(f"Failed to configure MEXC exchange: {e}")
         
         self.load_state_from_file()
         
@@ -115,20 +125,22 @@ class TradingBot:
             if USE_SIMULATOR and self.simulator:
                 ohlcv = self.simulator.fetch_ohlcv(tf, limit=limit)
             else:
+                # Используем публичный MEXC spot для OHLCV (не требует API-ключей)
+                exc = self.public_exchange if self.public_exchange else self.exchange
                 try:
-                    ohlcv = self.exchange.fetch_ohlcv("ETH/USDT", timeframe=tf, limit=limit)
-                except:
-                    ohlcv = self.exchange.fetch_ohlcv(SYMBOL, timeframe=tf, limit=limit)
-            
+                    ohlcv = exc.fetch_ohlcv(SYMBOL_SPOT, timeframe=tf, limit=limit)
+                except Exception:
+                    ohlcv = exc.fetch_ohlcv("ETH/USDT:USDT", timeframe=tf, limit=limit)
+
             if not ohlcv or len(ohlcv) < 5:
                 return None
-                
+
             df = pd.DataFrame(ohlcv)
             df.columns = ["timestamp", "open", "high", "low", "close", "volume"]
             df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
             return df
         except Exception as e:
-            logging.error(f"Error fetching {tf} ohlcv: {e}")
+            logging.error(f"MEXC OHLCV {tf} error: {e}")
             return None
 
     def compute_psar(self, df: pd.DataFrame):
@@ -314,11 +326,17 @@ class TradingBot:
 
     def get_current_price(self):
         try:
-            if USE_SIMULATOR: return self.simulator.get_current_price()
-            try: ticker = self.exchange.fetch_ticker("ETH/USDT")
-            except: ticker = self.exchange.fetch_ticker(SYMBOL)
+            if USE_SIMULATOR:
+                return self.simulator.get_current_price()
+            # Публичный тикер MEXC spot — не требует API-ключей
+            exc = self.public_exchange if self.public_exchange else self.exchange
+            try:
+                ticker = exc.fetch_ticker(SYMBOL_SPOT)
+            except Exception:
+                ticker = exc.fetch_ticker("ETH/USDT:USDT")
             return float(ticker["last"])
-        except: return 3000.0
+        except Exception:
+            return 3000.0
 
     def strategy_loop(self, should_continue=lambda: True):
         while should_continue():
