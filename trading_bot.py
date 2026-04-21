@@ -13,36 +13,44 @@ import logging
 from market_simulator import MarketSimulator
 from signal_sender import SignalSender
 
-# ========== Прямой REST API (MEXC + Binance fallback) ==========
+# ========== Прямой REST API (AscendEx) ==========
 def _rest_get(url, timeout=10):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
-def fetch_ohlcv_mexc(symbol="ETHUSDT", interval="1m", limit=200):
-    """OHLCV с MEXC REST API."""
-    url = f"https://api.mexc.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    raw = _rest_get(url)
-    return [[int(d[0]), float(d[1]), float(d[2]), float(d[3]), float(d[4]), float(d[5])] for d in raw]
+# AscendEx interval mapping: tf string -> minutes as string
+_ASCENDEX_INTERVAL = {"1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60"}
 
-def fetch_price_mexc(symbol="ETHUSDT"):
-    """Текущая цена ETH с MEXC REST API."""
-    data = _rest_get(f"https://api.mexc.com/api/v3/ticker/price?symbol={symbol}")
-    return float(data["price"])
+def fetch_ohlcv_ascendex(symbol="ETH/USDT", interval="1m", limit=200):
+    """OHLCV с AscendEx REST API."""
+    iv = _ASCENDEX_INTERVAL.get(interval, interval)
+    url = f"https://ascendex.com/api/pro/v1/barhist?symbol={symbol}&interval={iv}&n={limit}"
+    resp = _rest_get(url)
+    raw = resp.get("data", [])
+    # API может вернуть {"data": [...]} или {"data": {"data": [...]}}
+    if isinstance(raw, dict):
+        raw = raw.get("data", [])
+    return [[int(b["ts"]), float(b["o"]), float(b["h"]), float(b["l"]), float(b["c"]), float(b["v"])] for b in raw]
+
+def fetch_price_ascendex(symbol="ETH/USDT"):
+    """Текущая цена ETH с AscendEx REST API."""
+    data = _rest_get(f"https://ascendex.com/api/pro/v1/ticker?symbol={symbol}")
+    return float(data["data"]["close"])
 
 # ========== Конфигурация ==========
-# Ключи MEXC (приоритет) или AscendEx (обратная совместимость)
-API_KEY    = os.getenv("MEXC_API_KEY",    os.getenv("ASCENDEX_API_KEY", ""))
-API_SECRET = os.getenv("MEXC_SECRET",     os.getenv("ASCENDEX_SECRET",  ""))
+# Ключи AscendEx
+API_KEY    = os.getenv("ASCENDEX_API_KEY", "")
+API_SECRET = os.getenv("ASCENDEX_SECRET",  "")
 RUN_IN_PAPER = True
 USE_SIMULATOR = os.getenv("USE_SIMULATOR", "0") == "1"
 
-SYMBOL        = "ETH/USDT:USDT"  # MEXC linear perpetual futures
+SYMBOL        = "ETH/USDT:USDT"  # AscendEx perpetual futures
 SYMBOL_SPOT   = "ETH/USDT"       # для публичного OHLCV (не требует ключей)
-LEVERAGE = 500  # плечо x500 (может быть изменено через API)
+LEVERAGE = 500  # плечо x500
 ISOLATED = True  # изолированная маржа
 POSITION_PERCENT = 0.10  # 10% от доступного баланса
-TIMEFRAMES = {"1m": 1, "5m": 5, "30m": 30}  # Установлены 3 таймфрейма: 1м, 5м, 30м
+TIMEFRAMES = {"1m": 1, "5m": 5, "15m": 15}  # Установлены 3 таймфрейма: 1м, 5м, 15м
 MIN_TRADE_SECONDS = 120  # минимальная длительность сделки 2 минуты
 MIN_RANDOM_TRADE_SECONDS = 480  # минимальная случайная длительность сделки 8 минут
 MAX_RANDOM_TRADE_SECONDS = 780  # максимальная случайная длительность сделки 13 минут
@@ -76,17 +84,17 @@ class TradingBot:
             self.exchange = None
             self.public_exchange = None
         else:
-            logging.info("Initializing MEXC exchange connection")
+            logging.info("Initializing AscendEx exchange connection")
             self.simulator = None
 
-            # Публичный клиент MEXC — для OHLCV/цены (без ключей)
-            self.public_exchange = ccxt.mexc({
+            # Публичный клиент AscendEx — для OHLCV/цены (без ключей)
+            self.public_exchange = ccxt.ascendex({
                 "enableRateLimit": True,
                 "options": {"defaultType": "spot"},
             })
 
-            # Торговый клиент MEXC — для ордеров (нужны ключи)
-            self.exchange = ccxt.mexc({
+            # Торговый клиент AscendEx — для ордеров (нужны ключи)
+            self.exchange = ccxt.ascendex({
                 "apiKey": API_KEY,
                 "secret": API_SECRET,
                 "enableRateLimit": True,
@@ -100,7 +108,7 @@ class TradingBot:
                         self.exchange.set_margin_mode('isolated', SYMBOL)
                     self.exchange.set_leverage(lev, SYMBOL)
                 except Exception as e:
-                    logging.error(f"Failed to configure MEXC exchange: {e}")
+                    logging.error(f"Failed to configure AscendEx exchange: {e}")
         
         self.load_state_from_file()
         
@@ -144,19 +152,19 @@ class TradingBot:
                 ohlcv = self.simulator.fetch_ohlcv(tf, limit=limit)
             else:
                 ohlcv = None
-                # 1) MEXC REST API напрямую
+                # 1) AscendEx REST API напрямую
                 try:
-                    ohlcv = fetch_ohlcv_mexc("ETHUSDT", interval=tf, limit=limit)
-                    logging.debug(f"MEXC OHLCV {tf}: {len(ohlcv)} candles")
+                    ohlcv = fetch_ohlcv_ascendex("ETH/USDT", interval=tf, limit=limit)
+                    logging.debug(f"AscendEx OHLCV {tf}: {len(ohlcv)} candles")
                 except Exception as e1:
-                    logging.warning(f"MEXC REST OHLCV {tf} failed: {e1}")
-                    # 2) ccxt.mexc (резерв)
+                    logging.warning(f"AscendEx REST OHLCV {tf} failed: {e1}")
+                    # 2) ccxt.ascendex (резерв)
                     try:
                         exc = self.public_exchange if self.public_exchange else self.exchange
                         ohlcv = exc.fetch_ohlcv(SYMBOL_SPOT, timeframe=tf, limit=limit)
-                        logging.info(f"ccxt MEXC OHLCV {tf}: {len(ohlcv)} candles")
+                        logging.info(f"ccxt AscendEx OHLCV {tf}: {len(ohlcv)} candles")
                     except Exception as e2:
-                        logging.error(f"MEXC OHLCV {tf} failed (REST + ccxt): {e2}")
+                        logging.error(f"AscendEx OHLCV {tf} failed (REST + ccxt): {e2}")
 
             if not ohlcv or len(ohlcv) < 5:
                 return None
@@ -354,12 +362,12 @@ class TradingBot:
         try:
             if USE_SIMULATOR:
                 return self.simulator.get_current_price()
-            # 1) MEXC REST API
+            # 1) AscendEx REST API
             try:
-                return fetch_price_mexc("ETHUSDT")
+                return fetch_price_ascendex("ETH/USDT")
             except Exception as e1:
-                logging.warning(f"MEXC REST price failed: {e1}")
-                # 2) ccxt.mexc (резерв)
+                logging.warning(f"AscendEx REST price failed: {e1}")
+                # 2) ccxt.ascendex (резерв)
                 exc = self.public_exchange if self.public_exchange else self.exchange
                 try:
                     ticker = exc.fetch_ticker(SYMBOL_SPOT)
@@ -378,8 +386,8 @@ class TradingBot:
                     time.sleep(5)
                     continue
 
-                d1, d5, d30 = dirs["1m"], dirs["5m"], dirs["30m"]
-                logging.info(f"[{self.now()}] SAR: 1m={d1}, 5m={d5}, 30m={d30}")
+                d1, d5, d15 = dirs["1m"], dirs["5m"], dirs["15m"]
+                logging.info(f"[{self.now()}] SAR: 1m={d1}, 5m={d5}, 15m={d15}")
 
                 if state["in_position"]:
                     if d1 != state["position"]["side"]:
@@ -391,7 +399,7 @@ class TradingBot:
                         state["skip_next_signal"] = False
                     state["last_1m_dir"] = d1
                     
-                    if d1 and d1 == d5 == d30 and not state["skip_next_signal"]:
+                    if d1 and d1 == d5 == d15 and not state["skip_next_signal"]:
                         price = self.get_current_price()
                         size, _ = self.compute_order_size_usdt(state["balance"], price)
                         self.place_market_order("buy" if d1 == "long" else "sell", size)
