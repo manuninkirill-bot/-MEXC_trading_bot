@@ -155,7 +155,7 @@ class TradingDashboard {
 
     updateSARDirections(directions) {
         if (!directions) return;
-        const timeframes = ['1m', '5m', '30m'];
+        const timeframes = ['1m', '5m', '15m'];
         let allMatch = true, matchDirection = null;
 
         timeframes.forEach(tf => {
